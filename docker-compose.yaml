@@ -1,0 +1,16 @@
+version: '3.8'
+
+services:
+  droxy:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: droxy
+    image: droxy:latest
+    ports:
+      - "8000:8000"
+      - "8080:8080"
+    network_mode: bridge
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+    restart: unless-stopped
