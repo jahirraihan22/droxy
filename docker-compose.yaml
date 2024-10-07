@@ -1,12 +1,12 @@
 version: '3.8'
 
 services:
-  droxy:
+  app:
     build:
       context: .
       dockerfile: Dockerfile
     container_name: droxy
-    image: droxy:latest
+    image: droxy-app:latest
     ports:
       - "8000:8000"
       - "8080:8080"

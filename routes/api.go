@@ -58,12 +58,15 @@ func InitProxyServer(server *echo.Echo) {
 		//}
 		containerName := strings.Split(ctx.Request().Host, ".")[0]
 		if _, ok := config.ContainerCache[containerName]; ok {
+			if config.ContainerCache[containerName].NetworkSettings.Networks[config.ContainerCache[containerName].HostConfig.NetworkMode].IPAddress == "" {
+				return ctx.JSON(http.StatusForbidden, fmt.Sprintf("Looks like  %s is not alive!", ctx.Request().Host))
+			}
 			log.Println("Forwarding Request => ", config.ContainerCache[containerName].NetworkSettings.Networks[config.ContainerCache[containerName].HostConfig.NetworkMode].IPAddress+":"+strconv.Itoa(int(config.ContainerCache[containerName].Ports[0].PrivatePort)))
 			return ReverseProxy(config.ContainerCache[containerName].NetworkSettings.Networks[config.ContainerCache[containerName].HostConfig.NetworkMode].IPAddress, strconv.Itoa(int(config.ContainerCache[containerName].Ports[0].PrivatePort)))(ctx)
 		} else {
 			log.Println("[Error] container does not exist")
+			return ctx.JSON(http.StatusForbidden, fmt.Sprintf("Looks like %s is not exist!", ctx.Request().Host))
 		}
-		return ctx.JSON(http.StatusForbidden, fmt.Sprintf("Looks like the host %s is not exist ", ctx.Request().Host))
 	})
 }
 
@@ -95,8 +98,111 @@ func InitProxyServer(server *echo.Echo) {
 //		proxy.ServeHTTP(ctx.Response(), r)
 //		return nil
 //	}
-
+//
 //}
+
+// ReverseProxy function for handling HTTP and WebSocket requests
+//func ReverseProxy(target string, port string) echo.HandlerFunc {
+//	urlStr := "http://" + target + ":" + port
+//	u, err := url.Parse(urlStr)
+//	if err != nil {
+//		log.Fatalf("Failed to parse target URL: %v", err)
+//	}
+//
+//	proxy := httputil.NewSingleHostReverseProxy(u)
+//	path := u.Path
+//	if strings.HasPrefix(path, "/") {
+//		path = path[1:]
+//	}
+//	// Customize the proxy's director to modify requests before forwarding
+//	proxy.Director = func(req *http.Request) {
+//		// Update the request URL and headers
+//		req.URL.Scheme = u.Scheme
+//		req.URL.Host = u.Host
+//
+//		// Keep or modify the incoming path
+//		req.URL.Path = strings.TrimPrefix(req.URL.Path, "/")
+//		req.Host = u.Host
+//		req.Header.Set("X-Forwarded-Host", req.Host)
+//		req.Header.Set("X-Real-IP", req.RemoteAddr)
+//	}
+//	//// Modify the response to override the Referrer-Policy
+//	//proxy.ModifyResponse = func(res *http.Response) error {
+//	//	// Override Referrer-Policy header
+//	//	res.Header.Set("Referrer-Policy", "no-referrer-when-downgrade")
+//	//	// You can also disable the referrer policy entirely:
+//	//	// res.Header.Set("Referrer-Policy", "no-referrer")
+//	//	return nil
+//	//}
+//
+//	// WebSocket upgrader
+//	upgdr := websocket.Upgrader{
+//		CheckOrigin: func(r *http.Request) bool {
+//			// Optionally validate the request origin (can be used for security)
+//			return true
+//		},
+//	}
+//
+//	return func(ctx echo.Context) error {
+//		// Check if the request is a WebSocket upgrade request
+//		if websocket.IsWebSocketUpgrade(ctx.Request()) {
+//			// Upgrade the connection to WebSocket
+//			conn, err := upgdr.Upgrade(ctx.Response().Writer, ctx.Request(), nil)
+//			if err != nil {
+//				log.Println("Failed to upgrade to WebSocket:", err)
+//				return err
+//			}
+//			defer conn.Close()
+//
+//			// Construct the WebSocket URL
+//			targetWSURL := "ws://" + target + ":" + port + path
+//
+//			// Remove headers that should not be forwarded to the target WebSocket server
+//			requestHeader := ctx.Request().Header.Clone()
+//			requestHeader.Del("Connection")
+//			requestHeader.Del("Upgrade")
+//
+//			// Create a WebSocket dialer to connect to the target server
+//			targetConn, _, err := websocket.DefaultDialer.Dial(targetWSURL, requestHeader)
+//			if err != nil {
+//				log.Println("Failed to connect to target WebSocket server:", err)
+//				return err
+//			}
+//			defer targetConn.Close()
+//
+//			// Handle bidirectional WebSocket communication
+//			go func() {
+//				defer conn.Close()
+//				for {
+//					msgType, msg, err := targetConn.ReadMessage()
+//					if err != nil {
+//						log.Println("Error reading from target:", err)
+//						break
+//					}
+//					if err := conn.WriteMessage(msgType, msg); err != nil {
+//						log.Println("Error writing to client:", err)
+//						break
+//					}
+//				}
+//			}()
+//
+//			for {
+//				msgType, msg, err := conn.ReadMessage()
+//				if err != nil {
+//					log.Println("Error reading from client:", err)
+//					break
+//				}
+//				if err := targetConn.WriteMessage(msgType, msg); err != nil {
+//					log.Println("Error writing to target:", err)
+//					break
+//				}
+//			}
+//		} else {
+//			// Handle regular HTTP requests
+//			proxy.ServeHTTP(ctx.Response(), ctx.Request())
+//		}
+//		return nil
+//	}
 
 func ReverseProxy(target string, port string) echo.HandlerFunc {
 	urlStr := "http://" + target + ":" + port
@@ -107,76 +213,76 @@ func ReverseProxy(target string, port string) echo.HandlerFunc {
 
 	proxy := httputil.NewSingleHostReverseProxy(u)
 
+	// Customize the proxy's director to modify requests before forwarding
 	proxy.Director = func(req *http.Request) {
-		// Update the request URL and headers
 		req.URL.Scheme = u.Scheme
 		req.URL.Host = u.Host
+		req.Host = u.Host
+		req.URL.Path = req.URL.Path // Keep the original path
 
-		path := u.Path
-		if strings.HasPrefix(path, "/") {
-			path = path[1:]
+		if websocket.IsWebSocketUpgrade(req) {
+			req.Header.Set("Connection", "Upgrade")
+			req.Header.Set("Upgrade", "websocket")
 		}
 
-		// Handle the incoming path
-		// If you want to keep the incoming path as is:
-		req.URL.Path = req.URL.Path + path
-
-		log.Println("[INFO] serving => ", req.URL.Path)
-
-		// If you want to modify the path (e.g., add a prefix):
-		// req.URL.Path = "/new-prefix" + req.URL.Path
-
-		req.Host = u.Host
-		req.Header.Set("X-Forwarded-Host", req.Host)
-		req.Header.Set("X-Real-IP", req.RemoteAddr)
 	}
 
-	//return func(ctx echo.Context) error {
-	//	// Set up the response and handle the request
-	//	proxy.ServeHTTP(ctx.Response(), ctx.Request())
-	//	return nil
-	//}
+	// WebSocket upgrader
+	upgrader := websocket.Upgrader{
+		CheckOrigin: func(r *http.Request) bool {
+			return true // Allow all origins, adjust as needed
+		},
+	}
 
 	return func(ctx echo.Context) error {
 		// Check if the request is a WebSocket upgrade request
-		if ctx.Request().Header.Get("Upgrade") == "websocket" {
+		if websocket.IsWebSocketUpgrade(ctx.Request()) {
 			// Upgrade the connection to WebSocket
-			w := websocket.Upgrader{}
-			conn, err := w.Upgrade(ctx.Response().Writer, ctx.Request(), nil)
+			conn, err := upgrader.Upgrade(ctx.Response().Writer, ctx.Request(), nil)
 			if err != nil {
-				return err
-			}
-			if err != nil {
-				log.Println("Failed to upgrade connection:", err)
+				log.Println("Failed to upgrade to WebSocket:", err)
 				return err
 			}
 			defer conn.Close()
 
-			// Create a new request to the target server for the WebSocket connection
-			req := ctx.Request()
-			req.URL.Scheme = u.Scheme
-			req.URL.Host = u.Host
-			req.Host = u.Host
+			// Prepare a new request to the target server
+			targetWSURL := "ws://" + target + ":" + port + ctx.Request().URL.Path
+			targetReq, err := http.NewRequest("GET", targetWSURL, nil)
+			if err != nil {
+				log.Println("Failed to create target WebSocket request:", err)
+				return err
+			}
 
-			// Establish a WebSocket connection with the target server
-			targetConn, _, err := websocket.DefaultDialer.Dial(req.URL.String(), req.Header)
+			//// Forward headers, but skip WebSocket-specific headers
+			//for key, values := range ctx.Request().Header {
+			//	for _, value := range values {
+			//		if key == "Connection" || key == "Upgrade" ||
+			//			key == "Sec-WebSocket-Key" || key == "Sec-WebSocket-Version" ||
+			//			key == "Sec-WebSocket-Extensions" || key == "Sec-WebSocket-Protocol" {
+			//			continue // Skip duplicate headers
+			//		}
+			//		targetReq.Header.Add(key, value)
+			//	}
+			//}
+
+			// Create a WebSocket dialer to connect to the target server
+			targetConn, _, err := websocket.DefaultDialer.Dial(targetReq.URL.String(), targetReq.Header)
 			if err != nil {
 				log.Println("Failed to connect to target WebSocket server:", err)
 				return err
 			}
 			defer targetConn.Close()
 
-			// Handle the WebSocket communication
+			// Handle bidirectional WebSocket communication
 			go func() {
-				defer conn.Close()
 				for {
 					msgType, msg, err := targetConn.ReadMessage()
 					if err != nil {
-						log.Println("Read error:", err)
+						log.Println("Error reading from target:", err)
 						break
 					}
 					if err := conn.WriteMessage(msgType, msg); err != nil {
-						log.Println("Write error:", err)
+						log.Println("Error writing to client:", err)
 						break
 					}
 				}
@@ -185,14 +291,15 @@ func ReverseProxy(target string, port string) echo.HandlerFunc {
 			for {
 				msgType, msg, err := conn.ReadMessage()
 				if err != nil {
-					log.Println("Read error:", err)
+					log.Println("Error reading from client:", err)
 					break
 				}
 				if err := targetConn.WriteMessage(msgType, msg); err != nil {
-					log.Println("Write error:", err)
+					log.Println("Error writing to target:", err)
 					break
 				}
 			}
+			return nil // Return nil to prevent writing further
 		} else {
 			// Handle regular HTTP requests
 			proxy.ServeHTTP(ctx.Response(), ctx.Request())
